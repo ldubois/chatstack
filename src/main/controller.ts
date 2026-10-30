@@ -522,10 +522,27 @@ export class Controller implements MenuActions {
     this.chromeAccessBlocked = profiles.length === 0 && isChromeAccessBlocked();
   }
 
+  /** Clique tous les boutons « Marquer comme lu » des conversations de Google Chat. */
+  /** Clique tous les boutons « Marquer comme lu » visibles (plusieurs passes :
+   *  Google Chat ne rend que les conversations visibles, la liste se met à jour). */
+  private markAllRead(view: AccountView): void {
+    const js = `(() => {
+      const SEL = '[aria-label="Marquer comme lu"], [aria-label="Mark as read"], [data-tooltip="Marquer comme lu"], [data-tooltip="Mark as read"]';
+      let pass = 0;
+      const run = () => {
+        document.querySelectorAll(SEL).forEach((b) => { try { b.click(); } catch (e) {} });
+        if (++pass < 10) setTimeout(run, 500);
+      };
+      run();
+    })()`;
+    view.webContents.executeJavaScript(js).catch(() => undefined);
+  }
+
   private popupAccountMenu(id: string): void {
     const view = this.views.get(id);
     if (!view) return;
     Menu.buildFromTemplate([
+      { label: 'Marquer tout comme lu', click: () => this.markAllRead(view) },
       { label: 'Recharger', click: () => view.reload() },
       {
         label: 'Notifications',
