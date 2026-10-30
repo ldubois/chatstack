@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:" />
+    <title>ChatStack</title>
+  </head>
+  <body>
+    <aside id="sidebar">
+      <div class="drag-zone"></div>
+      <nav id="accounts"></nav>
+      <button id="add" class="side-btn" title="Ajouter un compte (⌘N)">+</button>
+      <div class="spacer"></div>
+      <button id="dnd" class="side-btn" title="Ne pas déranger">☾</button>
+      <button id="settings" class="side-btn" title="Réglages (⌘,)">⚙︎</button>
+    </aside>
+    <main id="content"></main>
+    <script type="module" src="/src/renderer/shell.ts"></script>
+  </body>
+</html>

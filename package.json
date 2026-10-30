@@ -1,0 +1,37 @@
+{
+  "name": "chatstack",
+  "productName": "ChatStack",
+  "version": "0.1.0",
+  "description": "Client macOS multi-comptes pour Google Chat — tous tes comptes dans une seule app, notifications natives, badge dans le Dock",
+  "main": ".vite/build/main.js",
+  "scripts": {
+    "start": "electron-forge start",
+    "package": "electron-forge package",
+    "make": "electron-forge make",
+    "lint": "eslint --ext .ts .",
+    "typecheck": "tsc --noEmit",
+    "generate-icons": "node scripts/generate-icons.js"
+  },
+  "keywords": ["google-chat", "multi-account", "electron", "macos", "notifications", "productivity"],
+  "author": {
+    "name": "Ludovic Dubois"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@electron-forge/cli": "^7.11.1",
+    "@electron-forge/maker-dmg": "^7.11.1",
+    "@electron-forge/maker-zip": "^7.11.1",
+    "@electron-forge/plugin-auto-unpack-natives": "^7.11.1",
+    "@electron-forge/plugin-fuses": "^7.11.1",
+    "@electron-forge/plugin-vite": "^7.11.1",
+    "@electron/fuses": "^1.8.0",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "electron": "40.1.0",
+    "eslint": "^8.57.1",
+    "eslint-plugin-import": "^2.32.0",
+    "sharp": "^0.34.5",
+    "typescript": "^5.7.0",
+    "vite": "^5.4.21"
+  }
+}
