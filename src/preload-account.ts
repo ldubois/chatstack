@@ -29,6 +29,25 @@ contextBridge.executeInMainWorld({
     if (!bridge || (window as any).__chatstackInstalled) return;
     (window as any).__chatstackInstalled = true;
 
+    // Google Chat met en pause son compteur de non-lus quand la page est « cachée ».
+    // Un compte en arrière-plan l'est → on fait croire à la page qu'elle est
+    // toujours visible et au premier plan, pour que le compteur reste à jour partout.
+    try {
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => false });
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
+      Object.defineProperty(document, 'webkitVisibilityState', { configurable: true, get: () => 'visible' });
+      document.hasFocus = () => true;
+      const swallow = (e: Event) => {
+        e.stopImmediatePropagation();
+        e.stopPropagation();
+      };
+      window.addEventListener('visibilitychange', swallow, true);
+      document.addEventListener('visibilitychange', swallow, true);
+      window.addEventListener('webkitvisibilitychange', swallow, true);
+    } catch {
+      // propriétés non redéfinissables : on continue sans
+    }
+
     const live = new Map<string, any>();
     let seq = 0;
 
@@ -147,6 +166,51 @@ contextBridge.executeInMainWorld({
       notification.fire('click');
       live.delete(msg.id);
     });
+
+    // Compteur de non-lus : Google Chat ne touche ni au titre ni au badge, mais
+    // le raccourci « Accueil » porte le total (« …, N messages non lus ») et le
+    // favicon passe de « no_dot » à « dot ». On lit l'un, à défaut l'autre.
+    let lastBadge = NaN;
+    const readUnread = () => {
+      let total = 0;
+      let found = false;
+      const nodes = document.querySelectorAll('[aria-label]');
+      for (let i = 0; i < nodes.length; i++) {
+        const label = nodes[i].getAttribute('aria-label') || '';
+        // « Raccourci vers Accueil, 10 messages non lus » / « Home …, 10 unread »
+        const m = label.match(/(?:accueil|home)[^0-9]*?(\d+)\s*(?:message|non\s*lu|unread)/i);
+        if (m) {
+          total = parseInt(m[1], 10) || 0;
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        const link = document.querySelector("link[rel~='icon'], link[rel*='icon']") as HTMLLinkElement | null;
+        const fav = link ? link.href : '';
+        if (/dot_\d+px/i.test(fav) && !/no_dot/i.test(fav)) total = -1; // présence sans nombre
+      }
+      if (total !== lastBadge) {
+        lastBadge = total;
+        bridge.badge(total);
+      }
+    };
+
+    const schedule = (() => {
+      let timer = 0;
+      return () => {
+        clearTimeout(timer);
+        timer = window.setTimeout(readUnread, 400);
+      };
+    })();
+
+    const start = () => {
+      readUnread();
+      new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['aria-label', 'href'] });
+      setInterval(readUnread, 5000); // filet de sécurité
+    };
+    if (document.body) start();
+    else window.addEventListener('DOMContentLoaded', start, { once: true });
   },
   args: [BRIDGE],
 });

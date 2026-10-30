@@ -10,7 +10,7 @@ const DEFAULTS: Settings = {
   showPreview: true,
   dockBounce: 'informational',
   badgeMode: 'count',
-  showTray: true,
+  showTray: false,
   launchAtLogin: false,
   closeToBackground: true,
   meetInBrowser: true,

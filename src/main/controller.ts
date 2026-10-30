@@ -1,6 +1,7 @@
 import {
   app,
   BaseWindow,
+  BrowserWindow,
   dialog,
   ipcMain,
   Menu,
@@ -10,6 +11,8 @@ import {
   type IpcMainEvent,
   type IpcMainInvokeEvent,
 } from 'electron';
+import { Notification } from 'electron';
+import { execFile } from 'node:child_process';
 import path from 'node:path';
 import {
   DND_FOREVER,
@@ -17,10 +20,12 @@ import {
   type AccountState,
   type AppState,
   type ChatNotificationPayload,
+  type NewAccountInput,
   type Overlay,
   type Settings,
 } from '../shared/types';
 import { AccountView } from './account-view';
+import { importGoogleSession, isChromeAccessBlocked, listChromeProfiles, listGoogleAccounts } from './chrome-import';
 import { buildAppMenu, dndItems, StatusTray, type MenuActions } from './menus';
 import { Notifier } from './notifier';
 import { SettingsStore } from './store';
@@ -35,12 +40,14 @@ export class Controller implements MenuActions {
   private readonly views = new Map<string, AccountView>();
   private readonly notifier: Notifier;
   private readonly tray: StatusTray;
-  private win!: BaseWindow;
+  private win!: BaseWindow;  // instance concrète : BrowserWindow (pour l'icône du Dock)
   private shell!: WebContentsView;
   private overlay: Overlay = null;
   private quitting = false;
   private pushScheduled = false;
   private dndTimer: NodeJS.Timeout | null = null;
+  private chromeProfiles = listChromeProfiles();
+  private chromeAccessBlocked = isChromeAccessBlocked();
 
   constructor() {
     this.notifier = new Notifier({
@@ -73,6 +80,7 @@ export class Controller implements MenuActions {
     this.applyLoginItem();
     this.armDndTimer();
     this.changed();
+
 
     app.on('before-quit', () => {
       this.quitting = true;
@@ -168,7 +176,10 @@ export class Controller implements MenuActions {
 
   private createWindow(): void {
     const bounds = this.restoredBounds();
-    this.win = new BaseWindow({
+    // BrowserWindow (et non BaseWindow) : une app dont la seule fenêtre est une
+    // BaseWindow n'obtient pas d'icône dans le Dock sur macOS. On garde l'UI dans
+    // des WebContentsView enfants ; la webContents racine reste vide, masquée.
+    this.win = new BrowserWindow({
       ...bounds,
       minWidth: 640,
       minHeight: 480,
@@ -177,6 +188,7 @@ export class Controller implements MenuActions {
       trafficLightPosition: { x: 10, y: 16 },
       backgroundColor: '#1f2937',
       show: false,
+      webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false },
     });
 
     this.shell = new WebContentsView({
@@ -185,6 +197,7 @@ export class Controller implements MenuActions {
         contextIsolation: true,
         sandbox: true,
         nodeIntegration: false,
+        backgroundThrottling: false,
       },
     });
     this.shell.setBackgroundColor('#00000000');
@@ -246,13 +259,16 @@ export class Controller implements MenuActions {
     const activeId = this.store.get().activeAccountId;
     for (const [id, view] of this.views) {
       view.view.setBounds({ x: SIDEBAR_WIDTH, y: 0, width: Math.max(0, width - SIDEBAR_WIDTH), height });
-      view.view.setVisible(this.overlay === null && id === activeId);
+      // Compte non connecté : on affiche l'écran de connexion ChatStack (import Chrome) à la place de Google.
+      const waitingForChoice = view.state.signedOut && !view.state.showLogin;
+      view.view.setVisible(this.overlay === null && id === activeId && !waitingForChoice);
     }
   }
 
   private setOverlay(overlay: Overlay): void {
     if (overlay === 'add-account' || overlay === 'settings' || overlay === null) {
       this.overlay = overlay === null && this.views.size === 0 ? 'add-account' : overlay;
+      if (this.overlay === 'add-account') this.reloadChromeProfiles();
       this.layout();
       if (this.overlay) this.shell.webContents.focus();
       else this.activeView()?.webContents.focus();
@@ -338,14 +354,72 @@ export class Controller implements MenuActions {
       if (fromShell(event)) this.switchTo(String(id));
     });
 
-    ipcMain.handle('shell:add-account', (event, input: Partial<Account>) => {
+    ipcMain.handle('shell:add-account', async (event, input: NewAccountInput) => {
       if (!fromShell(event)) return null;
       const account = this.store.normalizeAccount({ name: input.name, color: input.color, url: input.url });
       this.store.update({ accounts: [...this.store.get().accounts, account] });
-      this.mountAccount(account);
+      const view = this.mountAccount(account);
+      // Connexion manuelle : page Google directement ; sinon écran « Connecter » (import Chrome).
+      view.state.showLogin = !input.viaChrome;
       this.switchTo(account.id);
       return account;
     });
+
+    ipcMain.handle('shell:chrome-accounts', async (event, chromeProfile: string) => {
+      if (!fromShell(event)) return [];
+      try {
+        return listGoogleAccounts(String(chromeProfile));
+      } catch (err) {
+        await this.importError(err);
+        return [];
+      }
+    });
+
+    ipcMain.handle('shell:import-chrome', async (event, id: string, chromeProfile: string, authUser: number) => {
+      const view = fromShell(event) ? this.views.get(String(id)) : undefined;
+      if (!view) return false;
+      const rank = Math.max(0, Math.min(9, Math.trunc(Number(authUser)) || 0));
+      if (!(await this.importFromChrome(view.account, String(chromeProfile)))) return false;
+      view.account.url = `https://chat.google.com/u/${rank}/`;
+      this.store.update({ accounts: [...this.store.get().accounts] });
+      view.state.showLogin = true; // on affiche la page (Chat ou, si l'import a raté, la connexion)
+      void view.webContents.loadURL(view.account.url);
+      this.changed();
+      return true;
+    });
+
+    ipcMain.on('shell:request-notifications', (event) => {
+      if (!fromShell(event)) return;
+      // Afficher une notification force l'enregistrement de l'app et la demande
+      // d'autorisation ; on ouvre ensuite le volet Notifications des Réglages.
+      if (Notification.isSupported()) {
+        try {
+          new Notification({ title: 'ChatStack', body: 'Notifications activées.', silent: true }).show();
+        } catch {
+          // ignore
+        }
+      }
+      execFile('/usr/bin/open', ['x-apple.systempreferences:com.apple.Notifications-Settings.extension'], (err) => {
+        if (err) console.error('[notif] ouverture des réglages impossible', err);
+      });
+    });
+
+    ipcMain.on('shell:open-privacy', (event) => {
+      if (!fromShell(event)) return;
+      // Via /usr/bin/open (Launch Services), pas shell.openExternal : sur certaines
+      // versions de macOS ce schéma est sinon renvoyé au navigateur par défaut.
+      execFile('/usr/bin/open', ['x-apple.systempreferences:com.apple.preference.security?Privacy_AllFilesAccess'], (err) => {
+        if (err) console.error('[privacy] ouverture des réglages impossible', err);
+      });
+    });
+
+    ipcMain.on('shell:show-login', (event, id: string) => {
+      const view = fromShell(event) ? this.views.get(String(id)) : undefined;
+      if (!view) return;
+      view.state.showLogin = true;
+      this.changed();
+    });
+
 
     ipcMain.on('shell:update-account', (event, id: string, patch: Partial<Account>) => {
       if (!fromShell(event)) return;
@@ -422,6 +496,32 @@ export class Controller implements MenuActions {
     });
   }
 
+  /** Importe la connexion Google d'un profil Chrome ; en cas d'échec, on retombe sur la connexion manuelle. */
+  private async importFromChrome(account: Account, profileDir: string): Promise<boolean> {
+    try {
+      await importGoogleSession(profileDir, electronSession.fromPartition(AccountView.partition(account.id)));
+      return true;
+    } catch (err) {
+      await this.importError(err);
+      return false;
+    }
+  }
+
+  private async importError(err: unknown): Promise<void> {
+    await dialog.showMessageBox(this.win, {
+      type: 'warning',
+      message: 'Import depuis Chrome impossible',
+      detail: `${err instanceof Error ? err.message : String(err)}\n\nTu peux te connecter directement dans ChatStack.`,
+    });
+  }
+
+  /** Relit les profils Chrome ; on garde la dernière liste connue si la lecture échoue. */
+  private reloadChromeProfiles(): void {
+    const profiles = listChromeProfiles();
+    if (profiles.length) this.chromeProfiles = profiles;
+    this.chromeAccessBlocked = profiles.length === 0 && isChromeAccessBlocked();
+  }
+
   private popupAccountMenu(id: string): void {
     const view = this.views.get(id);
     if (!view) return;
@@ -471,7 +571,14 @@ export class Controller implements MenuActions {
   private snapshot(): AppState {
     const states: Record<string, AccountState> = {};
     for (const [id, view] of this.views) states[id] = { ...view.state };
-    return { settings: this.store.get(), states, overlay: this.overlay, version: app.getVersion() };
+    return {
+      settings: this.store.get(),
+      states,
+      overlay: this.overlay,
+      version: app.getVersion(),
+      chromeProfiles: this.chromeProfiles,
+      chromeAccessBlocked: this.chromeAccessBlocked,
+    };
   }
 
   /** Regroupe les mises à jour (badge, menus, sidebar) en un seul passage. */
@@ -485,6 +592,7 @@ export class Controller implements MenuActions {
   }
 
   private refresh(): void {
+    this.layout();
     const settings = this.store.get();
     let total = 0;
     let attention = false;

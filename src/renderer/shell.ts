@@ -1,5 +1,5 @@
 import './shell.css';
-import { ACCOUNT_COLORS, DEFAULT_CHAT_URL, DND_FOREVER, type Account, type AppState } from '../shared/types';
+import { ACCOUNT_COLORS, DEFAULT_CHAT_URL, DND_FOREVER, type Account, type AppState, type ChromeProfile, type GoogleAccount } from '../shared/types';
 
 const api = window.chatstack;
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector(sel) as T;
@@ -7,6 +7,8 @@ const $ = <T extends HTMLElement>(sel: string) => document.querySelector(sel) as
 let state: AppState | null = null;
 let renderedSignature = '';
 let pendingRender = false;
+let chromeProfiles: ChromeProfile[] = [];
+let chromeAccessBlocked = false;
 
 // ------------------------------------------------------------------ helpers
 
@@ -134,9 +136,33 @@ function renderAddAccount(): HTMLElement {
   };
   paint();
 
+  // Source de connexion : reprise de Chrome (écran « Connecter » ensuite) ou page Google.
+  const chromeAvailable = chromeProfiles.length > 0;
+  const useChrome = h('input', { type: 'radio', name: 'source', checked: chromeAvailable, disabled: !chromeAvailable });
+  const useLogin = h('input', { type: 'radio', name: 'source', checked: !chromeAvailable });
+  const chromeHint = chromeAvailable
+    ? 'Tu choisis ensuite parmi les comptes Google de ton Chrome.'
+    : chromeAccessBlocked
+      ? 'Accès aux données de Chrome bloqué par macOS (voir ci-dessous).'
+      : 'Aucun profil Chrome trouvé sur ce Mac.';
+  const source = h(
+    'div',
+    { class: 'field' },
+    h('span', {}, 'Connexion'),
+    h('label', { class: `source${chromeAvailable ? '' : ' disabled'}` }, useChrome, h('div', {}, h('b', {}, 'Reprendre ma connexion Chrome'), h('small', {}, chromeHint))),
+    h('label', { class: 'source' }, useLogin, h('div', {}, h('b', {}, 'Me connecter dans ChatStack'), h('small', {}, 'Page de connexion Google classique.'))),
+    !chromeAvailable && chromeAccessBlocked ? accessBanner() : null,
+  );
+
+  const submitBtn = h('button', { type: 'submit', class: 'btn primary' }, 'Ajouter le compte');
   const submit = async (e: Event) => {
     e.preventDefault();
-    await api.addAccount({ name: name.value, color, url: url.value });
+    submitBtn.disabled = true;
+    try {
+      await api.addAccount({ name: name.value, color, url: url.value, viaChrome: useChrome.checked });
+    } finally {
+      submitBtn.disabled = false;
+    }
   };
 
   return h(
@@ -150,14 +176,140 @@ function renderAddAccount(): HTMLElement {
       { class: 'card', onsubmit: submit },
       h('label', { class: 'field' }, h('span', {}, 'Nom du compte'), name),
       h('div', { class: 'field' }, h('span', {}, 'Couleur'), swatches),
+      source,
       h('details', {}, h('summary', {}, 'Options avancées'), h('label', { class: 'field' }, h('span', {}, 'Adresse Google Chat'), url), h('p', { class: 'hint' }, 'Par défaut chat.google.com. Tu peux mettre https://mail.google.com/chat/ pour l’interface intégrée à Gmail.')),
       h(
         'div',
         { class: 'actions' },
         first ? null : h('button', { type: 'button', class: 'btn ghost', onclick: () => api.setOverlay(null) }, 'Annuler'),
-        h('button', { type: 'submit', class: 'btn primary' }, 'Ajouter et se connecter'),
+        submitBtn,
       ),
-      h('p', { class: 'hint' }, 'La page de connexion Google s’ouvre ensuite. Chaque compte a sa propre session isolée : cookies, stockage et cache ne sont jamais partagés.'),
+      h('p', { class: 'hint' }, 'Chaque compte a sa propre session isolée : cookies, stockage et cache ne sont jamais partagés.'),
+    ),
+  );
+}
+
+// ------------------------------------------------------------------ accès Chrome bloqué
+
+function accessBanner(): HTMLElement {
+  return h(
+    'div',
+    { class: 'notice' },
+    h('b', {}, 'ChatStack n’a pas accès aux données de Chrome'),
+    h('p', {}, 'macOS protège les données de Chrome. Pour reprendre ta connexion Google, autorise ChatStack une fois :'),
+    h(
+      'ol',
+      { class: 'steps' },
+      h('li', {}, 'Clique sur le bouton ci-dessous (ouvre « Confidentialité et sécurité »).'),
+      h('li', {}, 'Ouvre ', h('b', {}, 'Accès complet au disque'), '.'),
+      h('li', {}, 'Clique sur ', h('b', {}, '+'), ', choisis ', h('b', {}, 'ChatStack'), ', et active l’interrupteur.'),
+      h('li', {}, 'Quitte ChatStack (⌘Q) et rouvre-le.'),
+    ),
+    h('div', { class: 'actions' }, h('button', { class: 'btn primary', onclick: () => api.openPrivacySettings() }, 'Ouvrir les réglages de confidentialité')),
+    h('p', { class: 'hint' }, 'Tu préfères éviter cette autorisation ? « Me connecter dans ChatStack » fonctionne sans elle (connexion Google une seule fois, puis conservée).'),
+  );
+}
+
+// ------------------------------------------------------------------ compte non connecté
+
+/** Comptes Google détectés, conservés entre deux rendus de l'écran de connexion. */
+let found: { profile: string; accounts: GoogleAccount[] } | null = null;
+let searching = false;
+
+function renderConnect(account: Account): HTMLElement {
+  const profileSelect = h('select', {});
+  for (const p of chromeProfiles) {
+    profileSelect.append(h('option', { value: p.dir, selected: p.dir === found?.profile }, p.email ? `${p.name} — ${p.email}` : p.name));
+  }
+
+  const search = async () => {
+    searching = true;
+    renderContent(true);
+    try {
+      const accounts = await api.chromeAccounts(profileSelect.value);
+      found = { profile: profileSelect.value, accounts };
+    } finally {
+      searching = false;
+      renderContent(true);
+    }
+  };
+
+  const importRank = async (rank: number) => {
+    await api.importChrome(account.id, (found?.profile ?? profileSelect.value), rank);
+  };
+
+  let card: HTMLElement;
+  if (found && found.accounts.length) {
+    // Comptes trouvés : une ligne par e-mail, bouton « Connecter » par compte.
+    card = h(
+      'div',
+      { class: 'card form' },
+      h('div', { class: 'field' }, h('span', {}, 'Comptes Google de ton Chrome')),
+      ...found.accounts.map((g) => {
+        const btn = h('button', { class: 'btn primary small' }, 'Connecter');
+        btn.addEventListener('click', async () => {
+          btn.disabled = true;
+          btn.textContent = 'Import…';
+          try {
+            await importRank(g.index);
+          } finally {
+            btn.disabled = false;
+            btn.textContent = 'Connecter';
+          }
+        });
+        return h('div', { class: 'acc-pick' }, h('span', { class: 'avatar tiny', style: `--c:${account.color}` }, g.email[0].toUpperCase()), h('div', { class: 'pick-mail' }, g.email), btn);
+      }),
+      h('p', { class: 'hint' }, 'Un clic sur « Connecter » ouvre Google Chat de ce compte, déjà connecté. Pour en ajouter un autre, reviens au + ensuite.'),
+    );
+  } else if (found) {
+    // Recherche faite mais aucun e-mail détecté : repli sur le rang.
+    const ranks = ['Compte principal', '2ᵉ compte du profil', '3ᵉ compte du profil', '4ᵉ compte du profil', '5ᵉ compte du profil'];
+    const rankSelect = select('0', ranks.map((l, i) => [String(i), l] as [string, string]), () => undefined);
+    const importBtn = h('button', { class: 'btn primary' }, 'Importer et ouvrir Google Chat');
+    importBtn.addEventListener('click', async () => {
+      importBtn.disabled = true;
+      importBtn.textContent = 'Import…';
+      try {
+        await importRank(Number(rankSelect.value));
+      } finally {
+        importBtn.disabled = false;
+        importBtn.textContent = 'Importer et ouvrir Google Chat';
+      }
+    });
+    card = h(
+      'div',
+      { class: 'card form' },
+      h('p', { class: 'hint' }, 'E-mails non détectés automatiquement. Choisis le rang du compte dans ton Chrome :'),
+      h('label', { class: 'field' }, h('span', {}, 'Compte Google à reprendre'), rankSelect),
+      h('div', { class: 'actions' }, importBtn),
+    );
+  } else {
+    // Point de départ : choix du profil + recherche des comptes.
+    card = h(
+      'div',
+      { class: 'card form' },
+      h('label', { class: 'field' }, h('span', {}, 'Profil Chrome'), profileSelect),
+      h('div', { class: 'actions' }, h('button', { class: 'btn primary', disabled: searching, onclick: () => void search() }, searching ? 'Recherche des comptes…' : 'Rechercher mes comptes Google')),
+      h('p', { class: 'hint' }, 'Pas de mot de passe à retaper. macOS va demander l’accès au trousseau « Chrome Safe Storage » : clique sur « Toujours autoriser ».'),
+    );
+  }
+
+  return h(
+    'div',
+    { class: 'panel narrow' },
+    h(
+      'div',
+      { class: 'hero' },
+      h('span', { class: 'avatar big', style: `--c:${account.color}` }, initials(account.name)),
+      h('h1', {}, `Connecter « ${account.name} »`),
+      h('p', {}, 'Ce compte n’est pas encore connecté à Google.'),
+    ),
+    chromeProfiles.length ? card : chromeAccessBlocked ? accessBanner() : null,
+    h(
+      'div',
+      { class: 'alt-login' },
+      found ? h('button', { class: 'btn ghost', onclick: () => ((found = null), renderContent(true)) }, 'Changer de profil') : null,
+      h('button', { class: 'btn ghost', onclick: () => api.showLogin(account.id) }, chromeProfiles.length ? 'Me connecter plutôt avec mon e-mail Google' : 'Me connecter avec mon compte Google'),
     ),
   );
 }
@@ -242,6 +394,11 @@ function renderSettings(): HTMLElement {
         'Total des messages non lus des comptes inclus dans le badge.',
         select(settings.badgeMode, [['count', 'Nombre de non-lus'], ['dot', 'Simple pastille'], ['none', 'Aucun']], (v) => set({ badgeMode: v })),
       ),
+      row(
+        'Autorisation des notifications',
+        'Nécessaire pour les alertes ET pour que macOS affiche le badge du Dock. Active « Pastilles d’icône d’app » dans le volet qui s’ouvre.',
+        h('button', { class: 'btn primary', onclick: () => api.requestNotifications() }, 'Autoriser les notifications'),
+      ),
       h('p', { class: 'hint pad' }, 'Style des alertes (bannière / alerte persistante) : Réglages Système → Notifications → ChatStack.'),
     ),
 
@@ -278,7 +435,15 @@ function signature(s: AppState): string {
   delete rest.windowBounds;
   delete rest.activeAccountId;
   const emails = Object.values(s.states).map((st) => st.email);
-  return JSON.stringify({ o: s.overlay, rest, emails, dnd: dndActive() });
+  const active = s.settings.activeAccountId ? s.states[s.settings.activeAccountId] : undefined;
+  const connect = !!active && active.signedOut && !active.showLogin;
+  return JSON.stringify({ o: s.overlay, rest, emails, dnd: dndActive(), connect, a: connect ? active.id : null });
+}
+
+function activeNeedsConnect(): boolean {
+  const id = state?.settings.activeAccountId;
+  const st = id ? state!.states[id] : undefined;
+  return !!st && st.signedOut && !st.showLogin && state!.settings.accounts.some((a) => a.id === id);
 }
 
 function renderContent(force = false): void {
@@ -299,12 +464,15 @@ function renderContent(force = false): void {
   content.replaceChildren();
   if (state.overlay === 'settings') content.append(renderSettings());
   else if (state.overlay === 'add-account') content.append(renderAddAccount());
+  else if (activeNeedsConnect()) content.append(renderConnect(state.settings.accounts.find((a) => a.id === state!.settings.activeAccountId)!));
   else content.append(h('div', { class: 'placeholder' }, h('div', { class: 'logo faded' })));
   if (!overlayChanged) content.scrollTop = scroll;
   (content.querySelector('[autofocus]') as HTMLElement | null)?.focus();
 }
 
 function apply(next: AppState): void {
+  chromeProfiles = next.chromeProfiles;
+  chromeAccessBlocked = next.chromeAccessBlocked;
   state = next;
   document.body.classList.toggle('has-overlay', next.overlay !== null);
   renderSidebar();

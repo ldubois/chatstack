@@ -65,7 +65,7 @@ export class AccountView {
       },
     });
     this.view.setBackgroundColor('#ffffff');
-    this.state = { id: account.id, unread: 0, attention: false, loading: true, crashed: false, email: null };
+    this.state = { id: account.id, unread: 0, attention: false, loading: true, crashed: false, email: null, signedOut: false, showLogin: false };
 
     this.wire(this.view.webContents);
     void this.view.webContents.loadURL(account.url);
@@ -129,11 +129,18 @@ export class AccountView {
       this.state.loading = false;
       this.hooks.onStateChange();
     });
+
     wc.on('did-navigate', (_event, url) => {
       wc.setZoomFactor(this.account.zoom);
       // Non connecté : chat.google.com renvoie vers la page marketing Workspace.
       // On envoie directement sur la connexion Google, avec retour vers Chat.
       const u = parseUrl(url);
+      const signedOut = u?.hostname === 'accounts.google.com' || u?.hostname === 'workspace.google.com';
+      if (signedOut !== this.state.signedOut) {
+        this.state.signedOut = signedOut;
+        if (!signedOut) this.state.showLogin = false;
+        this.hooks.onStateChange();
+      }
       if (u?.hostname === 'workspace.google.com') {
         void wc.loadURL(`https://accounts.google.com/ServiceLogin?continue=${encodeURIComponent(this.account.url)}`);
       }

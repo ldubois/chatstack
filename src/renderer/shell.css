@@ -340,7 +340,8 @@ h2 {
   box-shadow: var(--shadow);
 }
 
-form.card {
+form.card,
+.card.form {
   padding: 22px;
   display: flex;
   flex-direction: column;
@@ -675,4 +676,120 @@ kbd {
   border-radius: 4px;
   padding: 0 4px;
   background: var(--card);
+}
+
+.source {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.source:has(input:checked) {
+  border-color: var(--accent);
+  background: rgba(16, 185, 129, 0.08);
+}
+
+.source.disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.source input {
+  margin-top: 3px;
+  accent-color: var(--accent);
+}
+
+.source small {
+  display: block;
+  color: var(--muted);
+}
+
+
+.avatar.big {
+  width: 72px;
+  height: 72px;
+  border-radius: 20px;
+  font-size: 26px;
+  opacity: 1;
+  margin: 0 auto 18px;
+}
+
+.alt-login {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.notice {
+  margin-top: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--warn);
+  border-radius: 10px;
+  background: rgba(245, 158, 11, 0.1);
+}
+
+.notice b {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.notice p {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.notice .actions {
+  justify-content: flex-start;
+}
+
+.steps {
+  margin: 0 0 12px;
+  padding-left: 20px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.steps b {
+  display: inline;
+  color: var(--fg);
+}
+
+.acc-pick {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.acc-pick:last-of-type {
+  border-bottom: 0;
+}
+
+.avatar.tiny {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  font-size: 13px;
+  opacity: 1;
+}
+
+.pick-mail {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.btn.small {
+  padding: 5px 12px;
+  font-size: 12px;
 }
