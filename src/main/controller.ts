@@ -44,6 +44,7 @@ export class Controller implements MenuActions {
   private shell!: WebContentsView;
   private overlay: Overlay = null;
   private quitting = false;
+  private cookiesFlushed = false;
   private pushScheduled = false;
   private dndTimer: NodeJS.Timeout | null = null;
   private chromeProfiles = listChromeProfiles();
@@ -82,10 +83,20 @@ export class Controller implements MenuActions {
     this.changed();
 
 
-    app.on('before-quit', () => {
+    app.on('before-quit', (event) => {
       this.quitting = true;
       this.saveBounds();
       this.store.flush();
+      // Google fait tourner ses cookies de session toutes les ~10 min ; sans écriture
+      // sur disque avant de quitter, on repart au lancement suivant avec une copie
+      // périmée que Google refuse → compte déconnecté.
+      if (this.cookiesFlushed) return;
+      event.preventDefault();
+      const flushes = [...this.views.keys()].map((id) => electronSession.fromPartition(AccountView.partition(id)).cookies.flushStore());
+      void Promise.race([Promise.allSettled(flushes), new Promise((r) => setTimeout(r, 2_000))]).then(() => {
+        this.cookiesFlushed = true;
+        app.quit();
+      });
     });
     app.on('activate', () => this.showWindow());
   }
@@ -538,12 +549,43 @@ export class Controller implements MenuActions {
     view.webContents.executeJavaScript(js).catch(() => undefined);
   }
 
+  /**
+   * Repart d'une session Google vierge, propre à ChatStack. Une session importée de
+   * Chrome partage ses cookies avec Chrome : dès que l'un des deux les fait tourner
+   * (__Secure-1PSIDTS, DBSC), Google invalide l'autre copie → déconnexions répétées.
+   */
+  private async reconnect(id: string): Promise<void> {
+    const view = this.views.get(id);
+    if (!view) return;
+    const { response } = await dialog.showMessageBox(this.win, {
+      type: 'question',
+      buttons: ['Se reconnecter', 'Annuler'],
+      defaultId: 0,
+      cancelId: 1,
+      message: `Reconnecter « ${view.account.name} » ?`,
+      detail:
+        'La session actuelle est effacée et la page de connexion Google s’ouvre. ' +
+        'Connectez-vous avec l’e-mail de ce compte uniquement : la session sera propre à ChatStack, indépendante de Chrome.',
+    });
+    if (response !== 0) return;
+
+    await electronSession.fromPartition(AccountView.partition(id)).clearStorageData();
+    // Session vierge = un seul compte Google connecté → toujours /u/0/.
+    view.account.url = 'https://chat.google.com/u/0/';
+    this.store.update({ accounts: [...this.store.get().accounts] });
+    view.state.showLogin = true;
+    void view.webContents.loadURL(`https://accounts.google.com/ServiceLogin?continue=${encodeURIComponent(view.account.url)}`);
+    this.switchTo(id);
+    this.changed();
+  }
+
   private popupAccountMenu(id: string): void {
     const view = this.views.get(id);
     if (!view) return;
     Menu.buildFromTemplate([
       { label: 'Marquer tout comme lu', click: () => this.markAllRead(view) },
       { label: 'Recharger', click: () => view.reload() },
+      { label: 'Se reconnecter…', click: () => void this.reconnect(id) },
       {
         label: 'Notifications',
         type: 'checkbox',
